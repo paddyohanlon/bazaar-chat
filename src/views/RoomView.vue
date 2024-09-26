@@ -2,18 +2,18 @@
 import { computed, onUnmounted, ref, type Ref } from "vue";
 import type { Chat, Room } from "@/types";
 import {
+  GranteeType,
   OrderByType,
   PermissionType,
   SendNotification,
   type NewPermission,
-  type Permission,
   type SharingNotification,
   type User,
 } from "@bzr/bazaar";
 import { useRoute, useRouter } from "vue-router";
 import ChatItem from "@/components/ChatItem.vue";
 import { bzr, getChatsCollectionName, ROOMS_COLLECTION_NAME } from "@/bzr";
-import type { CollectionOptions, SubscribeListener } from "node_modules/@bzr/bazaar/dist/types";
+import type { ContextOptions, SubscribeListener, UserPermission } from "node_modules/@bzr/bazaar/dist/types";
 import { useUsers } from "@/composables/users";
 
 const route = useRoute();
@@ -31,12 +31,12 @@ const roomId = ref(route.params.roomId as string);
 const hasAccess = ref(true);
 const message = ref("");
 const selectedUser: Ref<User | null> = ref(null);
-const permissions: Ref<Permission[]> = ref([]);
+const permissions: Ref<UserPermission[]> = ref([]);
 const unsubscribe = ref(() => {});
 
-const collectionOptions: CollectionOptions = { userId: roomUserId.value };
+const contextOptions: ContextOptions = { ownerId: roomUserId.value };
 
-const roomsCollection = bzr.collection<Room>(ROOMS_COLLECTION_NAME, collectionOptions);
+const roomsCollection = bzr.createContext(contextOptions).collection<Room>(ROOMS_COLLECTION_NAME);
 
 const isOwner = computed(() => props.user.id === route.params.userId);
 
@@ -46,7 +46,8 @@ const isOwner = computed(() => props.user.id === route.params.userId);
     roomName.value = fetchedRoom.name;
 
     const fetchedChats = await bzr
-      .collection<Chat>(getChatsCollectionName(roomId.value), collectionOptions)
+      .createContext(contextOptions)
+      .collection<Chat>(getChatsCollectionName(roomId.value))
       .getAll({}, { orderBy: { ts: OrderByType.DESC } });
     chats.value = fetchedChats;
 
@@ -54,25 +55,28 @@ const isOwner = computed(() => props.user.id === route.params.userId);
       fetchAndCacheUser(chat.userId);
     }
 
-    const chatsListener: SubscribeListener<Chat> = ({ newDoc }) => {
-      if (newDoc) {
-        chats.value.unshift(newDoc);
-      }
+    const chatsListener: SubscribeListener<Chat> = {
+      onAdd: (doc) => chats.value.unshift(doc),
     };
+
     unsubscribe.value = await bzr
-      .collection<Chat>(getChatsCollectionName(roomId.value), collectionOptions)
+      .createContext(contextOptions)
+      .collection<Chat>(getChatsCollectionName(roomId.value))
       .subscribeAll({}, chatsListener);
   } catch (e) {
     hasAccess.value = false;
     console.log("e", e);
   }
 
-  const fetchedPermissions = await bzr.permissions.list({ collectionName: ROOMS_COLLECTION_NAME });
+  const fetchedPermissions = await bzr.permissions.list({
+    collectionName: ROOMS_COLLECTION_NAME,
+    granteeType: GranteeType.USER,
+  });
 
-  const permissionsForRoom = fetchedPermissions.filter((p) => p.filter?.id === roomId.value);
+  const permissionsForRoom = fetchedPermissions.filter((p) => p.filter?.id === roomId.value) as UserPermission[];
 
   for (const permission of permissionsForRoom) {
-    fetchAndCacheUser(permission.userId);
+    fetchAndCacheUser(permission.granteeId);
   }
 
   permissions.value = permissionsForRoom;
@@ -87,7 +91,7 @@ async function deleteRoom(): Promise<void> {
 async function sendMessage(): Promise<void> {
   const userId = props.user.id;
   const newChat = { message: message.value, ts: Date.now(), userId };
-  bzr.collection(getChatsCollectionName(roomId.value), collectionOptions).insertOne(newChat);
+  bzr.createContext(contextOptions).collection(getChatsCollectionName(roomId.value)).insertOne(newChat);
   fetchAndCacheUser(userId);
   message.value = "";
 }
@@ -107,7 +111,8 @@ function inviteUser() {
   const types = [PermissionType.READ, PermissionType.INSERT];
 
   const newPermissionRoomsDoc: NewPermission = {
-    userId: selectedUserId,
+    granteeId: selectedUserId,
+    granteeType: GranteeType.USER,
     collectionName: ROOMS_COLLECTION_NAME,
     types,
     filter: {
@@ -116,7 +121,8 @@ function inviteUser() {
   };
 
   const newPermissionChatsCollection: NewPermission = {
-    userId: selectedUserId,
+    granteeId: selectedUserId,
+    granteeType: GranteeType.USER,
     collectionName: getChatsCollectionName(roomId.value),
     types,
   };
@@ -130,6 +136,8 @@ function inviteUser() {
 
   bzr.permissions.create(newPermissionRoomsDoc, notification);
   bzr.permissions.create(newPermissionChatsCollection);
+
+  selectedUser.value = null;
 }
 
 onUnmounted(() => {
@@ -154,7 +162,7 @@ onUnmounted(() => {
         <button v-if="isOwner" class="button-small" type="button" @click="deleteRoom">Delete room</button>
       </div>
       <template v-if="isOwner">
-        <button class="button-small" @click="openSocialModal">Open Social Modal</button>
+        <button class="button-small" @click="openSocialModal">Find user to invite to chat</button>
         <div v-if="selectedUser">
           <p>
             Invite <strong>{{ selectedUser.handle }}</strong> to chat.
@@ -163,7 +171,7 @@ onUnmounted(() => {
         </div>
         <ul>
           <li v-for="permission of permissions" :key="permission.id">
-            {{ users.get(permission.userId)?.handle }}
+            {{ users.get(permission.granteeId)?.handle }}
           </li>
         </ul>
       </template>

@@ -23,15 +23,15 @@ const guestRooms: Ref<GuestRoom[]> = ref([]);
 
   const fetchedGrantedPermissions = await bzr.permissions.granted.list({ collectionName: ROOMS_COLLECTION_NAME });
 
-  for (const p of fetchedGrantedPermissions) {
-    const roomId = p.permission.filter?.id as string;
+  for (const { permission, ownerId } of fetchedGrantedPermissions) {
+    const roomId = permission.filter?.id as string;
     if (!roomId) continue;
-    const room = await bzr.collection<Room>(ROOMS_COLLECTION_NAME, { userId: p.ownerId }).getOne(roomId);
+    const room = await bzr.createContext({ ownerId: ownerId }).collection<Room>(ROOMS_COLLECTION_NAME).getOne(roomId);
     guestRooms.value.push({
       ...room,
-      ownerId: p.ownerId,
+      ownerId: ownerId,
     });
-    fetchAndCacheUser(p.ownerId);
+    fetchAndCacheUser(ownerId);
   }
 })();
 
